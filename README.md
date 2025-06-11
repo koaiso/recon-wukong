@@ -52,4 +52,4 @@ nuclei-result.txt	Vulnerability findings (via nuclei)
 sqlmap-output/	SQLMap dump results
 
 ✨ Author
-Developed by @koaiso (aka Wukong 🐵)
+Developed by @mzhsky (Wukong 🐵)
