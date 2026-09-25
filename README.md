@@ -1,56 +1,61 @@
-# 🔍 recon-wukong
+# recon-wukong
 
-Automated reconnaissance framework for bug bounty and pentest.  
-Built for fast subdomain discovery, endpoint collection, vulnerability detection, and SQLi/XSS identification — all in one script.
+Alur recon untuk satu domain: temukan subdomain, cek host yang merespons, lalu kumpulkan URL arsip untuk ditriase. Hasil setiap run disimpan terpisah dan dibatasi ke domain yang dimasukkan. Tidak ada instalasi otomatis atau pengujian SQL injection otomatis.
 
----
+Gunakan hanya pada aset yang memang masuk scope dan boleh diuji. Periksa aturan program sebelum memakai opsi `--nuclei`.
 
-## ⚙️ Features
+## Kebutuhan
 
-- 🛰️ Subdomain enumeration (`subfinder`, `assetfinder`)
-- 🌐 Live host check (`httpx`)
-- 🧠 Historical endpoint collection (`gau`)
-- 🎯 Parameter filtering for SQLi/XSS (`gf`)
-- ⚡ Vulnerability scanning (`nuclei`)
-- 🧪 SQL injection testing (`sqlmap`)
+- Bash dan Python 3 (modul standar saja).
+- [subfinder](https://github.com/projectdiscovery/subfinder) dan [ProjectDiscovery httpx](https://github.com/projectdiscovery/httpx).
+- Opsional: [assetfinder](https://github.com/tomnomnom/assetfinder), [gau](https://github.com/lc/gau) untuk URL historis, dan [nuclei](https://github.com/projectdiscovery/nuclei) untuk pemindaian yang diaktifkan secara eksplisit.
 
----
+Pastikan binary tersedia di `PATH` (`command -v subfinder httpx`). Jika Kali menyediakan binary `httpx` yang berbeda, gunakan binary ProjectDiscovery dari instalasi Go dan pastikan direktori bin Go ada di `PATH`.
 
-## 🚀 Quick Usage
+## Pakai
 
 ```bash
+git clone https://github.com/koaiso/recon-wukong.git
+cd recon-wukong
+chmod +x recon-wukong.sh
 ./recon-wukong.sh example.com
-Output will be saved in the current directory with results such as subs.txt, sqli.txt, xss.txt, and more.
+```
 
-📦 Requirements
-Make sure the following tools are installed and added to your $PATH:
+Contoh opsi:
 
-Go
-subfinder
-assetfinder
-httpx
-gau
-gf
-nuclei
-sqlmap
+```bash
+./recon-wukong.sh example.com --output hasil/contoh --rate 5
+./recon-wukong.sh example.com --nuclei --rate 5
+./recon-wukong.sh --help
+```
 
-📁 Output Files
+`--rate` membatasi request per detik untuk `httpx` dan `nuclei` (1–100; default 10). `--nuclei` menjalankan template severity medium, high, dan critical pada URL hidup yang lolos pemeriksaan scope. Tanpa opsi itu, tool tetap melakukan probe HTTP ringan ke host hasil penemuan. `gau` mengambil URL dari arsip publik; endpoint historis belum tentu masih hidup. Scan tidak mengikuti redirect lintas host secara sengaja.
 
-| File                | Description                           |
-| ------------------- | ------------------------------------- |
-| `subs.txt`          | Discovered subdomains                 |
-| `live.txt`          | Live subdomains with HTTP status      |
-| `endpoints.txt`     | Archived URLs with parameters         |
-| `params.txt`        | Filtered URLs containing parameters   |
-| `sqli.txt`          | SQLi parameter candidates (via `gf`)  |
-| `xss.txt`           | XSS parameter candidates (via `gf`)   |
-| `nuclei-result.txt` | Vulnerability findings (via `nuclei`) |
-| `sqlmap-output/`    | SQLMap dump results                   |
+Target harus nama domain biasa seperti `example.com`, bukan URL, wildcard, atau IP. Pencocokan scope memakai batas label DNS: `a.example.com` diterima, tetapi `example.com.evil.org` ditolak. Hasil URL dengan kredensial di bagian host ditolak.
 
-✨ Author
-Developed by MzH Sky (Wukong 🐵)
+## Berkas hasil
 
-📜 License
-MIT License
+Secara default hasil ditulis ke `results/<domain>/<waktu-UTC>/`:
 
----
+| Berkas | Isi |
+| --- | --- |
+| `hosts.txt` | Domain dan subdomain yang lolos scope |
+| `live.txt` | Output probe `httpx`, termasuk status selain 200 |
+| `live-urls.txt` | URL hidup yang lolos scope |
+| `endpoints.txt` | URL arsip yang lolos scope |
+| `params.txt` | URL arsip dengan parameter query |
+| `param-keys.tsv` | Frekuensi nama parameter dalam URL arsip |
+| `js.txt` | URL arsip berakhiran `.js` |
+| `api.txt` | URL arsip dengan path `/api/` atau `/graphql` |
+| `nuclei.txt` | Temuan Nuclei, hanya saat `--nuclei` digunakan |
+
+`params.txt`, `js.txt`, dan `api.txt` adalah kandidat untuk pemeriksaan manual, bukan bukti kerentanan. Tool tidak membuat klaim SQLi atau XSS dari pola URL.
+
+## Periksa perubahan
+
+```bash
+bash -n recon-wukong.sh
+python3 -m unittest discover -s tests -v
+```
+
+Ditulis untuk workflow bug bounty Wukong. Saran perbaikan dan laporan masalah bisa dikirim lewat [Issues](https://github.com/koaiso/recon-wukong/issues).
