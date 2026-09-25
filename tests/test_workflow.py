@@ -19,6 +19,7 @@ class WorkflowTest(unittest.TestCase):
                 "assetfinder": "printf '%s\\n' b.example.com evil-example.com",
                 "httpx": "printf '%s\\n' 'https://a.example.com/ [403] [Forbidden]' 'http://example.com/ [301]' 'https://evil.org/ [200]'",
                 "gau": "printf '%s\\n' 'https://a.example.com/api/v1?id=1' 'https://a.example.com/app.js' 'https://example.com.evil.org/?id=1' 'https://evil.org@example.com/private'",
+                "katana": "printf '%s\\n' 'https://a.example.com/form?q=1' 'https://example.com.evil.org/private'",
                 "nuclei": "touch \"$PWD/nuclei-was-run\"",
             }
             for name, body in commands.items():
@@ -39,6 +40,15 @@ class WorkflowTest(unittest.TestCase):
             self.assertEqual((output / "params.txt").read_text(), "https://a.example.com/api/v1?id=1\n")
             self.assertEqual((output / "param-keys.tsv").read_text(), "1\tid\n")
             self.assertFalse((base / "nuclei-was-run").exists())
+            crawled_output = base / "with-crawl"
+            crawled = subprocess.run(
+                ["bash", str(ROOT / "recon-wukong.sh"), "example.com", "--output", str(crawled_output), "--crawl"],
+                cwd=base, env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(crawled.returncode, 0, crawled.stderr)
+            self.assertEqual((crawled_output / "crawled.txt").read_text(),
+                             "https://a.example.com/form?q=1\n")
+            self.assertIn("/form?q=1", (crawled_output / "endpoints.txt").read_text())
 
 
 if __name__ == "__main__":
