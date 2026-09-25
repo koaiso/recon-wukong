@@ -1,73 +1,109 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -uo pipefail
 
-echo "🔥 WUKONG RECON FRAMEWORK 🔥"
-echo "Target domain: $1"
-echo
+usage() {
+  cat <<'HELP'
+recon-wukong — scoped reconnaissance
 
-# CEK DOMAIN INPUT
-if [ -z "$1" ]; then
-    echo "Usage: ./recon-wukong.sh domain.com"
-    exit 1
+Usage: ./recon-wukong.sh domain.tld [--output DIR] [--rate N] [--nuclei]
+
+  --output DIR  Results directory (default: results/<domain>/<UTC timestamp>)
+  --rate N      Maximum requests per second for httpx/nuclei (default: 10)
+  --nuclei      Run Nuclei on in-scope live URLs (off by default)
+  -h, --help    Show this help
+
+Run only against assets you are authorized to assess. Review program scope
+and scan restrictions before using --nuclei.
+HELP
+}
+
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+note() { printf '[+] %s\n' "$*"; }
+warn() { printf '[!] %s\n' "$*" >&2; }
+count() { wc -l < "$1" | tr -d ' '; }
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+[[ $# -gt 0 ]] || { usage >&2; exit 2; }
+if [[ $1 == -h || $1 == --help ]]; then usage; exit 0; fi
+target=$1; shift
+output=''; rate=10; run_nuclei=false
+while (($#)); do
+  case "$1" in
+    --output) (($# >= 2)) || die '--output needs a directory'; output=$2; shift 2 ;;
+    --rate) (($# >= 2)) || die '--rate needs a number'; rate=$2; shift 2 ;;
+    --nuclei) run_nuclei=true; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "unknown option: $1" ;;
+  esac
+done
+
+command -v python3 >/dev/null || die 'python3 is required'
+command -v subfinder >/dev/null || die 'subfinder is required'
+command -v httpx >/dev/null || die 'ProjectDiscovery httpx is required'
+[[ $rate =~ ^[0-9]+$ ]] && ((rate >= 1 && rate <= 100)) || die '--rate must be 1..100'
+domain=$(python3 "$script_dir/tools/scope.py" validate "$target") || die 'invalid target domain'
+if $run_nuclei; then command -v nuclei >/dev/null || die 'nuclei is required with --nuclei'; fi
+
+[[ -n $output ]] || output="results/$domain/$(date -u +%Y%m%dT%H%M%SZ)"
+[[ ! -e $output ]] || die "output already exists: $output"
+mkdir -p -- "$output" || die "cannot create output directory: $output"
+output=$(cd -- "$output" && pwd)
+tmp=$(mktemp -d) || die 'cannot create temporary directory'
+trap 'rm -rf -- "$tmp"' EXIT
+
+note "target: $domain"
+note "output: $output"
+printf '%s\n' "$domain" > "$tmp/hosts.raw"
+if ! subfinder -d "$domain" -silent >> "$tmp/hosts.raw"; then
+  warn 'subfinder returned an error; results may be incomplete'
 fi
-
-DOMAIN=$1
-
-# CEK DAN BUAT PATTERN GF
-if [ ! -d ~/.config/gf ]; then
-    echo "🛠️  Installing GF patterns..."
-    git clone https://github.com/tomnomnom/gf ~/.gf
-    mkdir -p ~/.config/gf
-    cp ~/.gf/examples/* ~/.config/gf
-fi
-
-# CEK TEMPLATE NUCLEI
-if [ ! -d ~/.config/nuclei-templates ]; then
-    echo "🛠️  Installing Nuclei templates..."
-    nuclei -update-templates
-fi
-
-echo "🔍 [1] Subdomain enumeration..."
-subfinder -d $DOMAIN -silent > subs.txt
-assetfinder --subs-only $DOMAIN >> subs.txt
-sort -u subs.txt -o subs.txt
-
-echo "🌐 [2] Live host checking..."
-cat subs.txt | httpx -silent -status-code -title -tech-detect -mc 200 > live.txt
-cut -d " " -f 1 live.txt > live-clean.txt
-
-echo "🧠 [3] Collecting historical endpoints..."
-cat live-clean.txt | gau > endpoints.txt
-
-echo "🎯 [4] Filtering for SQLi and XSS..."
-cat endpoints.txt | grep "=" | sort -u > params.txt
-
-if [ -s params.txt ]; then
-    cat params.txt | gf sqli > sqli.txt 2>/dev/null
-    cat params.txt | gf xss > xss.txt 2>/dev/null
+if command -v assetfinder >/dev/null; then
+  if ! assetfinder --subs-only "$domain" >> "$tmp/hosts.raw"; then
+    warn 'assetfinder returned an error; results may be incomplete'
+  fi
 else
-    echo "⚠️  No parameters found to analyze."
+  warn 'assetfinder missing; using subfinder only'
 fi
+python3 "$script_dir/tools/scope.py" hosts "$domain" < "$tmp/hosts.raw" | LC_ALL=C sort -u > "$output/hosts.txt"
+note "hosts: $(count "$output/hosts.txt")"
 
-echo "⚡ [5] Running nuclei scan on live hosts..."
-
-if [ -s live-clean.txt ]; then
-    nuclei -l live-clean.txt -t vulnerabilities/ -severity low,medium,high,critical -silent -o nuclei-result.txt
+# Keep every responding status, including 301/302/401/403/500.
+if ! httpx -l "$output/hosts.txt" -silent -status-code -title -rl "$rate" > "$tmp/httpx.raw"; then
+  warn 'httpx returned an error; live host results may be incomplete'
+fi
+python3 "$script_dir/tools/scope.py" live "$domain" < "$tmp/httpx.raw" | LC_ALL=C sort -u > "$output/live-urls.txt"
+if [[ -s $output/live-urls.txt ]]; then
+  # Only retain detailed rows that correspond to verified in-scope URLs.
+  python3 "$script_dir/tools/filter_httpx.py" "$output/live-urls.txt" < "$tmp/httpx.raw" > "$output/live.txt"
 else
-    echo "⚠️  No live hosts found. Skipping nuclei scan."
+  : > "$output/live.txt"
 fi
+note "live URLs: $(count "$output/live-urls.txt")"
 
-echo "🧪 [6] Running sqlmap test (top 5 SQLi candidates)..."
-
-if [ -s sqli.txt ]; then
-    head -n 5 sqli.txt | while read url; do
-        echo "→ Testing: $url"
-        sqlmap -u "$url" --batch --random-agent --level=5 --risk=3 --timeout=15 --technique=BU --text-only --output-dir=sqlmap-output/
-    done
+: > "$tmp/archive.raw"
+if command -v gau >/dev/null; then
+  if ! gau --subs "$domain" > "$tmp/archive.raw"; then
+    warn 'gau returned an error; archived URLs may be incomplete'
+  fi
 else
-    echo "⚠️  No SQLi candidates found."
+  warn 'gau missing; archived URLs skipped'
 fi
+python3 "$script_dir/tools/scope.py" urls "$domain" < "$tmp/archive.raw" | LC_ALL=C sort -u > "$output/endpoints.txt"
+python3 "$script_dir/tools/scope.py" params "$domain" < "$output/endpoints.txt" > "$output/params.txt"
+python3 "$script_dir/tools/scope.py" js "$domain" < "$output/endpoints.txt" > "$output/js.txt"
+python3 "$script_dir/tools/scope.py" api "$domain" < "$output/endpoints.txt" > "$output/api.txt"
+python3 "$script_dir/tools/scope.py" keys "$domain" < "$output/params.txt" > "$output/param-keys.tsv"
+note "archived URLs: $(count "$output/endpoints.txt"); parameters: $(count "$output/params.txt"); JS: $(count "$output/js.txt")"
 
-echo
-echo "✅ Recon selesai! Hasil disimpan di:"
-ls -1 *.txt 2>/dev/null
-[ -d sqlmap-output ] && echo "📁 sqlmap-output/"
+if $run_nuclei; then
+  : > "$output/nuclei.txt"
+  if [[ -s $output/live-urls.txt ]]; then
+    note "nuclei: rate $rate/s, severity medium/high/critical"
+    if ! nuclei -l "$output/live-urls.txt" -severity medium,high,critical -rate-limit "$rate" -silent -o "$output/nuclei.txt"; then
+      warn 'nuclei returned an error; check its output and installation'
+    fi
+  else
+    warn 'no live URLs; nuclei skipped'
+  fi
+fi
+note 'done — archived endpoints are leads, not verified vulnerabilities'
